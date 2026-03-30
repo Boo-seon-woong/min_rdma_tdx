@@ -12,6 +12,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/mman.h>
 #include <sys/socket.h>
 #include <time.h>
 #include <unistd.h>
@@ -80,6 +81,7 @@ typedef struct {
     struct ibv_mr *mr;
     uint8_t *buf;
     size_t bytes;
+    size_t mapped_bytes;
     size_t slot_size;
     uint32_t depth;
     peer_info_t local;
@@ -280,17 +282,21 @@ static int parse_config(const char *path, config_t *cfg) {
 }
 
 static void *xmem(size_t bytes) {
-    void *ptr = NULL;
-    size_t page = (size_t)(sysconf(_SC_PAGESIZE) > 0 ? sysconf(_SC_PAGESIZE) : 4096);
-    int rc;
+    void *ptr;
 
-    rc = posix_memalign(&ptr, page, bytes);
-    if (rc != 0) {
-        fprintf(stderr, "posix_memalign: %s\n", strerror(rc));
+    ptr = mmap(NULL, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (ptr == MAP_FAILED) {
+        perror("mmap");
         exit(1);
     }
     memset(ptr, 0, bytes);
     return ptr;
+}
+
+static size_t page_round_up(size_t bytes) {
+    size_t page = (size_t)(sysconf(_SC_PAGESIZE) > 0 ? sysconf(_SC_PAGESIZE) : 4096);
+
+    return ((bytes + page - 1) / page) * page;
 }
 
 static uint64_t now_ns(void) {
@@ -503,7 +509,7 @@ static int convert_shared(rdma_t *rdma, const config_t *cfg) {
     }
 
     rdma->shmem_req.addr = rdma->buf;
-    rdma->shmem_req.size = rdma->bytes;
+    rdma->shmem_req.size = rdma->mapped_bytes;
     if (ioctl(rdma->shmem_fd, IOCTL_CONVERT, &rdma->shmem_req) < 0) {
         perror("ioctl convert");
         close(rdma->shmem_fd);
@@ -511,7 +517,10 @@ static int convert_shared(rdma_t *rdma, const config_t *cfg) {
         return -1;
     }
     rdma->shmem_active = 1;
-    printf("tdx-shared path=%s bytes=%zu\n", cfg->tdx_shmem_path, rdma->bytes);
+    printf("tdx-shared path=%s bytes=%zu mapped_bytes=%zu\n",
+        cfg->tdx_shmem_path,
+        rdma->bytes,
+        rdma->mapped_bytes);
     fflush(stdout);
     return 0;
 }
@@ -542,6 +551,7 @@ static int rdma_open(const config_t *cfg, rdma_t *rdma) {
     rdma->slot_size = cfg->message_size;
     rdma->depth = cfg->queue_depth;
     rdma->bytes = rdma->slot_size * rdma->depth;
+    rdma->mapped_bytes = page_round_up(rdma->bytes);
 
     rdma->verbs = open_device(cfg->ib_device);
     if (rdma->verbs == NULL) {
@@ -581,7 +591,7 @@ static int rdma_open(const config_t *cfg, rdma_t *rdma) {
         return -1;
     }
 
-    rdma->buf = xmem(rdma->bytes);
+    rdma->buf = xmem(rdma->mapped_bytes);
     if (convert_shared(rdma, cfg) != 0) {
         return -1;
     }
@@ -590,7 +600,7 @@ static int rdma_open(const config_t *cfg, rdma_t *rdma) {
     if (cfg->mode == MODE_SERVER) {
         mr_access |= IBV_ACCESS_REMOTE_WRITE;
     }
-    rdma->mr = ibv_reg_mr(rdma->pd, rdma->buf, rdma->bytes, mr_access);
+    rdma->mr = ibv_reg_mr(rdma->pd, rdma->buf, rdma->mapped_bytes, mr_access);
     if (rdma->mr == NULL) {
         perror("ibv_reg_mr");
         return -1;
@@ -604,7 +614,7 @@ static int rdma_open(const config_t *cfg, rdma_t *rdma) {
     rdma->local.psn = (uint32_t)(rand() & 0x00ffffffu);
     rdma->local.addr = (uint64_t)(uintptr_t)rdma->buf;
     rdma->local.rkey = rdma->mr->rkey;
-    rdma->local.region_bytes = rdma->bytes;
+    rdma->local.region_bytes = rdma->mapped_bytes;
     return 0;
 }
 
@@ -628,7 +638,9 @@ static void rdma_close(rdma_t *rdma) {
         ibv_close_device(rdma->verbs);
     }
     revert_shared(rdma);
-    free(rdma->buf);
+    if (rdma->buf != NULL) {
+        munmap(rdma->buf, rdma->mapped_bytes);
+    }
     memset(rdma, 0, sizeof(*rdma));
     rdma->shmem_fd = -1;
 }

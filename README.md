@@ -15,7 +15,7 @@
 - `config/client_check.conf`: simba TDX guest client
 - `config/server_bench.conf`
 - `config/client_bench.conf`
-- `run_td.py`: `../rdma_check/run_td.py` wrapper
+- `run_td.py`: 설치된 `guest-tools/run_td` 또는 `../rdma_check/run_td.py` wrapper
 
 ## Build
 
@@ -35,6 +35,8 @@ sudo ./run_td.py --foreground
 
 - RDMA NIC passthrough: `0000:6f:00.0`
 - external SM
+- tcp host forward: `7301`
+- bind addr: `10.20.18.199`
 
 이 시나리오에서는 guest client가 `genie` 관리망으로 outbound TCP bootstrap을 거므로 추가 host forward가 필수는 아니다.
 
