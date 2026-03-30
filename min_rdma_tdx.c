@@ -307,6 +307,14 @@ static uint64_t now_ns(void) {
     return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
 }
 
+static void sleep_1ms(void) {
+    struct timespec ts;
+
+    ts.tv_sec = 0;
+    ts.tv_nsec = 1000000L;
+    nanosleep(&ts, NULL);
+}
+
 static int write_full(int fd, const void *buf, size_t len) {
     const uint8_t *p = buf;
     size_t done = 0;
@@ -737,7 +745,7 @@ static int poll_write_cq_timeout(struct ibv_cq *cq, uint64_t timeout_ns) {
         if (rc < 0) {
             return -1;
         }
-        usleep(1000);
+        sleep_1ms();
     }
 
     fprintf(stderr,
