@@ -35,6 +35,7 @@ sudo ./run_td.py --foreground
 
 - RDMA NIC passthrough: `0000:6f:00.0`
 - external SM
+- rdma iommufd: `on`
 - tcp host forward: `7301`
 - bind addr: `10.20.18.199`
 

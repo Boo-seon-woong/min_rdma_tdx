@@ -15,7 +15,7 @@ def main() -> int:
 
     default_args = [
         "--rdma-nics", "0000:6f:00.0",
-        "--rdma-iommufd", "off",
+        "--rdma-iommufd", "on",
         "--sm-mode", "external",
         "--tcp-hostfwd-ports", "7301",
         "--tcp-hostfwd-bind-addr", "10.20.18.199",

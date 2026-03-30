@@ -21,6 +21,7 @@
 #define READY 0x79
 #define DONE 0x64
 #define STR_BYTES 128
+#define WRITE_TIMEOUT_NS 10000000000ull
 #define IOCTL_CONVERT _IOW('t', 1, struct shm_req)
 #define IOCTL_REVERT _IOW('t', 2, struct shm_req)
 
@@ -701,16 +702,17 @@ static int post_write(const rdma_t *rdma, uint32_t slot, const peer_info_t *remo
     return ibv_post_send(rdma->qp, &wr, &bad);
 }
 
-static int poll_write_cq(struct ibv_cq *cq) {
+static int poll_write_cq_once(struct ibv_cq *cq) {
     struct ibv_wc wc;
-    int rc;
+    int rc = ibv_poll_cq(cq, 1, &wc);
 
-    do {
-        rc = ibv_poll_cq(cq, 1, &wc);
-    } while (rc == 0);
     if (rc < 0) {
         perror("ibv_poll_cq");
         return -1;
+    }
+    if (rc == 0) {
+        errno = EAGAIN;
+        return 1;
     }
     if (wc.status != IBV_WC_SUCCESS) {
         fprintf(stderr, "CQ error: %s opcode=%d\n", ibv_wc_status_str(wc.status), wc.opcode);
@@ -721,6 +723,27 @@ static int poll_write_cq(struct ibv_cq *cq) {
         return -1;
     }
     return 0;
+}
+
+static int poll_write_cq_timeout(struct ibv_cq *cq, uint64_t timeout_ns) {
+    uint64_t start = now_ns();
+
+    while (now_ns() - start < timeout_ns) {
+        int rc = poll_write_cq_once(cq);
+
+        if (rc == 0) {
+            return 0;
+        }
+        if (rc < 0) {
+            return -1;
+        }
+        usleep(1000);
+    }
+
+    fprintf(stderr,
+        "timeout waiting for RDMA_WRITE completion after bootstrap/QP connect; "
+        "suspect TDX guest shared-memory DMA path or VFIO/iommufd setup\n");
+    return -1;
 }
 
 static int expected_seq_for_slot(uint64_t iterations, uint32_t depth, uint32_t slot, uint64_t *seq) {
@@ -842,7 +865,8 @@ static int run_client(const config_t *cfg, const rdma_t *rdma, const peer_info_t
             inflight++;
         }
         if (inflight > 0) {
-            if (poll_write_cq(rdma->cq) != 0) {
+            errno = 0;
+            if (poll_write_cq_timeout(rdma->cq, WRITE_TIMEOUT_NS) != 0) {
                 return -1;
             }
             done++;
